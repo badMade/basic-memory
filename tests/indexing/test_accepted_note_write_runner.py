@@ -263,7 +263,18 @@ class _EditPreparer:
     def __init__(self, prepared: _PreparedWrite) -> None:
         self.prepared = prepared
         self.calls: list[
-            tuple[Entity, str, str, str, str | None, str | None, int, bool, AsyncSession | None]
+            tuple[
+                Entity,
+                str,
+                str,
+                str,
+                str | None,
+                str | None,
+                int,
+                bool,
+                dict | None,
+                AsyncSession | None,
+            ]
         ] = []
 
     async def prepare_edit_entity_content(
@@ -277,6 +288,7 @@ class _EditPreparer:
         find_text: str | None = None,
         expected_replacements: int = 1,
         replace_subsections: bool = True,
+        metadata: dict | None = None,
         session: AsyncSession | None = None,
     ) -> _PreparedWrite:
         self.calls.append(
@@ -289,6 +301,7 @@ class _EditPreparer:
                 find_text,
                 expected_replacements,
                 replace_subsections,
+                metadata,
                 session,
             )
         )
@@ -557,6 +570,7 @@ async def test_prepare_accepted_note_edit_applies_entity_fields() -> None:
             "# Accepted",
             1,
             True,
+            None,
             cast(AsyncSession, session),
         )
     ]
@@ -565,6 +579,55 @@ async def test_prepare_accepted_note_edit_applies_entity_fields() -> None:
     assert entity.file_path == "notes/edited.md"
     assert entity.last_updated_by is None
     assert session.flush_count == 1
+
+
+@pytest.mark.asyncio
+async def test_prepare_accepted_note_edit_threads_metadata_to_preparer() -> None:
+    """`metadata` must reach the preparer so frontmatter merges apply independent of `operation`."""
+    session = _FlushSession()
+    entity = _entity()
+    now = datetime(2026, 6, 19, 12, 45, tzinfo=UTC)
+    fields = _PreparedFields(
+        title="Edited",
+        note_type="note",
+        entity_metadata={"status": "resolved"},
+        content_type="text/markdown",
+        permalink="edited",
+        file_path="notes/edited.md",
+    )
+    prepared = _prepared(markdown_content="# Edited\n", fields=fields)
+    preparer = _EditPreparer(prepared)
+
+    await prepare_accepted_note_edit(
+        preparer,
+        cast(AsyncSession, session),
+        entity=entity,
+        current_note_content=_note_content(),
+        operation="find_replace",
+        content="# Edited",
+        section=None,
+        find_text="# Accepted",
+        expected_replacements=1,
+        replace_subsections=True,
+        metadata={"status": "resolved"},
+        now=now,
+        user_profile_value=None,
+    )
+
+    assert preparer.calls == [
+        (
+            entity,
+            "# Accepted\n",
+            "find_replace",
+            "# Edited",
+            None,
+            "# Accepted",
+            1,
+            True,
+            {"status": "resolved"},
+            cast(AsyncSession, session),
+        )
+    ]
 
 
 def test_apply_accepted_prepared_entity_fields_updates_mutable_entity() -> None:

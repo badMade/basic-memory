@@ -179,6 +179,38 @@ def _frontmatter_permalink(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+# title/type/permalink already have dedicated resolution paths elsewhere in
+# prepare_edit_entity_content (H1 title reconciliation, permalink resolver). Letting a
+# metadata merge touch them would race with those paths and could be silently reverted.
+_METADATA_IDENTITY_FIELDS = frozenset({"title", "type", "permalink"})
+
+
+def _merge_metadata_into_markdown(markdown_content: str, metadata: dict[str, Any]) -> str:
+    """Merge caller-supplied fields into a markdown string's YAML frontmatter.
+
+    Identity fields (title/type/permalink) are dropped from the merge; every other key
+    overwrites the existing frontmatter value or is added new. The note body, and any
+    frontmatter keys not present in ``metadata``, are left untouched.
+    """
+    sanitized = {k: v for k, v in metadata.items() if k not in _METADATA_IDENTITY_FIELDS}
+    if not sanitized:
+        return markdown_content
+
+    if has_frontmatter(markdown_content):
+        current_metadata = parse_frontmatter(markdown_content)
+        body = remove_frontmatter(markdown_content)
+    else:
+        current_metadata = {}
+        body = markdown_content
+
+    merged_metadata = deepcopy(current_metadata)
+    merged_metadata.update(sanitized)
+
+    post = frontmatter.Post(body)
+    post.metadata.update(merged_metadata)
+    return dump_frontmatter(post)
+
+
 def reconcile_prepared_edit_title_from_h1(
     *,
     original_markdown: str,
@@ -810,6 +842,7 @@ class EntityService(BaseService[EntityModel]):
         find_text: Optional[str] = None,
         expected_replacements: int = 1,
         replace_subsections: bool = True,
+        metadata: Optional[dict[str, Any]] = None,
         skip_conflict_check: bool = False,
         session: AsyncSession | None = None,
     ) -> PreparedEntityWrite:
@@ -819,6 +852,9 @@ class EntityService(BaseService[EntityModel]):
         does not read files, write files, or mutate database rows. That makes the
         edit base explicit so higher layers can reject stale content instead of
         silently editing whichever storage copy happens to be newest.
+
+        ``metadata``, when provided, is merged into the note's YAML frontmatter
+        independent of ``operation`` — see ``_merge_metadata_into_markdown``.
         """
         file_path = Path(entity.file_path)
         # Edits are intentionally based on explicit caller-supplied content. That makes stale-base
@@ -834,10 +870,13 @@ class EntityService(BaseService[EntityModel]):
             replace_subsections,
         )
 
+        if metadata:
+            markdown_content = _merge_metadata_into_markdown(markdown_content, metadata)
+
         title = entity.title
         note_type = entity.note_type
         permalink = entity.permalink
-        metadata = entity.entity_metadata
+        resolved_metadata = entity.entity_metadata
 
         if has_frontmatter(markdown_content):
             content_frontmatter = parse_frontmatter(markdown_content)
@@ -865,25 +904,27 @@ class EntityService(BaseService[EntityModel]):
                     )
 
             normalized_metadata = normalize_frontmatter_metadata(content_frontmatter or {})
-            metadata = {k: v for k, v in normalized_metadata.items() if v is not None} or None
+            resolved_metadata = {
+                k: v for k, v in normalized_metadata.items() if v is not None
+            } or None
 
         title_reconciliation = reconcile_prepared_edit_title_from_h1(
             original_markdown=current_content,
             markdown_content=markdown_content,
             current_title=entity.title,
             prepared_title=title,
-            metadata=metadata,
+            metadata=resolved_metadata,
         )
         markdown_content = title_reconciliation.markdown_content
         title = title_reconciliation.title
-        metadata = title_reconciliation.metadata
+        resolved_metadata = title_reconciliation.metadata
 
         entity_fields = self._build_entity_fields(
             file_path=file_path,
             title=title,
             note_type=note_type,
             content_type=entity.content_type,
-            metadata=metadata,
+            metadata=resolved_metadata,
             permalink=permalink,
         )
         return await self._build_prepared_write(

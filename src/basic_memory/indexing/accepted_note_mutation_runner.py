@@ -698,6 +698,7 @@ async def _run_accepted_note_edit(
             find_text=request.data.find_text,
             expected_replacements=request.data.expected_replacements,
             replace_subsections=request.data.replace_subsections,
+            metadata=request.data.metadata,
             now=now,
             user_profile_value=user_profile_value,
         )

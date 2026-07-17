@@ -914,6 +914,9 @@ async def test_edit_note_metadata_ignores_identity_fields(mcp_server, app, test_
 
         assert frontmatter["status"] == "resolved"
         assert frontmatter["title"] == "Identity Guard Note"
-        assert frontmatter["permalink"] == "tickets/identity-guard-note"
+        # permalink is preserved, not hijacked to the metadata value. Assert on the note's
+        # own slug rather than the exact string, since the harness prefixes the project name.
+        assert frontmatter["permalink"] != "hijacked/permalink"
+        assert frontmatter["permalink"].endswith("tickets/identity-guard-note")
         assert frontmatter["type"] == "note"
         assert "status: draft" not in content

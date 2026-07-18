@@ -252,13 +252,14 @@ async def format_file(
             logger.debug("No formatter configured for extension", extension=extension)
             return None
 
-    # Use external formatter
-    # Replace {file} placeholder with the actual path
-    cmd = formatter.replace("{file}", str(path))
-
+    # Use external formatter.
+    # Security: tokenize the formatter template BEFORE substituting the path so the
+    # path is always a single argv element. Substituting into the command string
+    # first and splitting afterwards would let a path containing spaces or shell
+    # metacharacters expand into extra argv tokens (argument injection).
+    # create_subprocess_exec already avoids a shell, but token boundaries matter.
     try:
-        # Parse command into args list for safer execution (no shell=True)
-        args = shlex.split(cmd)
+        args = [token.replace("{file}", str(path)) for token in shlex.split(formatter)]
 
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -306,7 +307,7 @@ async def format_file(
         # Formatter executable not found
         logger.warning(
             "Formatter executable not found",
-            command=cmd.split()[0] if cmd else "",
+            command=args[0] if args else formatter,
             path=str(path),
         )
         return None
@@ -552,6 +553,16 @@ def sanitize_for_directory(directory: str) -> str:
 
     # compress multiple, repeated instances of path separators
     sanitized = re.sub(r"[\\/]+", "/", sanitized)
+
+    # Drop path-traversal segments ('.' and '..'). This function is the single
+    # sanitization choke point for the Entity.directory field, which feeds the
+    # computed Entity.file_path used by every note create/update path (MCP tools,
+    # the v2 HTTP API, and importers). Filtering characters is not enough: '..'
+    # is made of allowed characters, so without this a hostile directory value
+    # like '../../etc' survives and escapes base_path when file_path is later
+    # joined onto it. (Security: path traversal / arbitrary file write.)
+    segments = [seg for seg in sanitized.split("/") if seg not in ("", ".", "..")]
+    sanitized = "/".join(segments)
 
     # trim any leading/trailing path separators
     sanitized = sanitized.strip("\\/")

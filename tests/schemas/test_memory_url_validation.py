@@ -91,6 +91,24 @@ class TestValidateMemoryUrlPath:
                 f"Path '{path}' should be invalid (invalid chars)"
             )
 
+    def test_invalid_path_traversal_segments(self):
+        """Security: '..'/'.' segments must fail validation so the resolved path
+        cannot climb out of the project-scoped API route it is spliced into."""
+        invalid_paths = [
+            "..",
+            "../secret",
+            "../../etc/passwd",
+            "notes/../../../etc",
+            "notes/../secret",
+            "./hidden",
+            "a/./b",
+        ]
+
+        for path in invalid_paths:
+            assert not validate_memory_url_path(path), (
+                f"Path '{path}' should be invalid (path traversal)"
+            )
+
 
 class TestNormalizeMemoryUrl:
     """Test the normalize_memory_url function."""

@@ -286,6 +286,17 @@ async def read_content(
 
         # Handle text or json
         if content_type.startswith("text/") or content_type == "application/json":
+            # Security (DoS): bound the raw text pulled fully into memory and the
+            # MCP response. The binary branch already enforces this cap, but the
+            # text branch did not, so a very large text/json resource could
+            # exhaust memory. Images are handled separately (downscaled by
+            # optimize_image), so this cap intentionally does not apply to them.
+            if content_length > 350000:
+                logger.warning("Text resource too large for response", size=content_length)
+                return {
+                    "type": "error",
+                    "error": f"Document size {content_length} bytes exceeds maximum allowed size",
+                }
             logger.debug("Processing text resource")
             logger.info(
                 f"MCP tool response: tool=read_content project={active_project.name} "

@@ -28,6 +28,10 @@ def get_rclone_config_path() -> Path:
     """Get the path to rclone configuration file."""
     config_dir = Path.home() / ".config" / "rclone"
     config_dir.mkdir(parents=True, exist_ok=True)
+    # rclone.conf holds S3 secret_access_key credentials; keep the directory
+    # owner-only on POSIX so the secrets are not group/world-readable.
+    if os.name != "nt":
+        config_dir.chmod(0o700)
     return config_dir / "rclone.conf"
 
 
@@ -60,6 +64,12 @@ def save_rclone_config(config: configparser.ConfigParser) -> None:
 
     with open(config_path, "w") as f:
         config.write(f)
+
+    # The file contains plaintext S3 secret_access_key credentials. Restrict it
+    # to owner read/write on POSIX so other local users cannot read the secret.
+    # (rclone itself writes this file 0o600; match that when we write it directly.)
+    if os.name != "nt":
+        config_path.chmod(0o600)
 
     console.print(f"[dim]Updated rclone config: {config_path}[/dim]")
 

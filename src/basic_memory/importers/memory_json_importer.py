@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from basic_memory.markdown.schemas import EntityFrontmatter, EntityMarkdown, Observation, Relation
 from basic_memory.importers.base import Importer
+from basic_memory.importers.utils import clean_filename
 from basic_memory.schemas.importer import EntityImportResult
 
 logger = logging.getLogger(__name__)
@@ -79,17 +80,27 @@ class MemoryJsonImporter(Importer[EntityImportResult]):
                 # Get entity type with fallback
                 entity_type = entity_data.get("entityType") or entity_data.get("type") or "entity"
 
+                # Sanitize the untrusted `name` and `entity_type` from the imported
+                # memory.json before they become filesystem path segments. Unlike the
+                # ChatGPT/Claude importers, this path was built raw, so a name like
+                # "../../../etc/foo" traversed out of the project root when write_entity
+                # joined file_path onto base_path. clean_filename() strips path
+                # separators and dots, matching the sibling importers.
+                # (Security: path traversal / arbitrary file write.)
+                safe_type = clean_filename(entity_type)
+                safe_name = clean_filename(name)
+
                 # Build permalink with optional destination folder prefix
                 relative_path = (
-                    f"{destination_folder}/{entity_type}/{name}"
+                    f"{destination_folder}/{safe_type}/{safe_name}"
                     if destination_folder
-                    else f"{entity_type}/{name}"
+                    else f"{safe_type}/{safe_name}"
                 )
                 permalink, file_path = self.build_import_paths(relative_path)
 
                 # Ensure entity type directory exists using FileService with relative path
                 entity_type_dir = (
-                    f"{destination_folder}/{entity_type}" if destination_folder else entity_type
+                    f"{destination_folder}/{safe_type}" if destination_folder else safe_type
                 )
                 await self.file_service.ensure_directory(entity_type_dir)
 

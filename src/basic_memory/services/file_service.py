@@ -76,6 +76,28 @@ class FileService:
         """
         return self.base_path / entity.file_path
 
+    def resolve_within_base(self, full_path: Path) -> Path:
+        """Resolve a target path and fail closed if it escapes the project root.
+
+        FileService is the shared filesystem sink for note writes and moves.
+        Path-boundary checks upstream (``validate_project_path`` in MCP tools and
+        v2 routers) are not applied by every caller — importers and runtime
+        materialization reach the sink directly — so this is the last-line
+        containment guard against path traversal / arbitrary file write.
+        ``resolve()`` collapses ``..`` segments and follows symlinks, so both
+        dot-segment traversal and symlink escape are rejected. ``base_path`` is
+        already resolved in ``__init__``, so the comparison is canonical.
+
+        Raises:
+            FileOperationError: If the resolved path is outside ``base_path``.
+        """
+        resolved = full_path.resolve()
+        if not resolved.is_relative_to(self.base_path):
+            raise FileOperationError(
+                f"Path '{full_path}' is not allowed - it escapes the project boundary"
+            )
+        return resolved
+
     async def read_entity_content(self, entity: EntityModel) -> str:
         """Get entity's content without frontmatter or structured sections.
 
@@ -207,6 +229,10 @@ class FileService:
         # Convert string to Path if needed
         path_obj = self.base_path / path if isinstance(path, str) else path
         full_path = path_obj if path_obj.is_absolute() else self.base_path / path_obj
+
+        # Fail closed before creating directories or writing bytes: reject any
+        # path that escapes the project root (path traversal / arbitrary write).
+        self.resolve_within_base(full_path)
 
         try:
             with logfire.span(
@@ -427,6 +453,12 @@ class FileService:
         dst_obj = self.base_path / destination if isinstance(destination, str) else destination
         src_full = src_obj if src_obj.is_absolute() else self.base_path / src_obj
         dst_full = dst_obj if dst_obj.is_absolute() else self.base_path / dst_obj
+
+        # Fail closed on traversal for both endpoints: a '..' source could move a
+        # file from outside the project into it, and a '..' destination could move
+        # a note out of the project root. (Security: path traversal.)
+        self.resolve_within_base(src_full)
+        self.resolve_within_base(dst_full)
 
         try:
             # Ensure destination directory exists

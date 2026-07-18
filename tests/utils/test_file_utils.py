@@ -276,6 +276,15 @@ def test_sanitize_for_filename_strips_trailing_periods():
         ("my\\directory\\sub", "my/directory/sub"),  # Windows-style separators normalized
         ("my/directory<>:|?*sub", "my/directorysub"),  # All invalid chars removed
         ("////my////directory////", "my/directory"),  # Excessive leading/trailing/multiple slashes
+        # Security: path-traversal segments ('.' and '..') must be dropped so a
+        # hostile Entity.directory cannot escape base_path when file_path is joined.
+        ("..", ""),  # Bare parent-dir segment dropped
+        (".", ""),  # Bare current-dir segment dropped
+        ("../secret", "secret"),  # Leading traversal dropped
+        ("../../etc/passwd", "etc/passwd"),  # Multiple leading traversals dropped
+        ("notes/../../../etc", "notes/etc"),  # Interior traversals dropped
+        ("a/./b/../c", "a/b/c"),  # Dot and dot-dot segments dropped
+        ("..\\..\\windows", "windows"),  # Windows-style traversal dropped
     ],
 )
 def test_sanitize_for_directory_edge_cases(input_directory, expected):
@@ -488,6 +497,44 @@ async def test_format_file_with_spaces_in_path(tmp_path: Path):
 
     result = await format_file(test_file, config)
     assert result == original_content
+
+
+@pytest.mark.asyncio
+async def test_format_file_passes_path_as_single_argv_element(tmp_path: Path, monkeypatch):
+    """Security: the file path must reach the formatter as ONE argv element even
+    when it contains spaces, so a crafted path cannot inject extra arguments.
+
+    The formatter template is tokenized before the path is substituted, so
+    ``prettier --write {file}`` always yields exactly three argv elements.
+    """
+    subdir = tmp_path / "path with spaces"
+    subdir.mkdir()
+    test_file = subdir / "my file.md"
+    test_file.write_text("# Test\n")
+
+    captured: dict[str, Any] = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        return _Proc()
+
+    monkeypatch.setattr(
+        "basic_memory.file_utils.asyncio.create_subprocess_exec", fake_exec
+    )
+
+    config = BasicMemoryConfig(
+        format_on_save=True,
+        formatter_command="prettier --write {file}",
+    )
+    await format_file(test_file, config)
+
+    assert captured["args"] == ("prettier", "--write", str(test_file))
 
 
 # =============================================================================

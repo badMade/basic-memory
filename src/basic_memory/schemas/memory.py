@@ -39,7 +39,6 @@ def validate_memory_url_path(path: str) -> bool:
         return False
 
     # Reject path-traversal segments. The resolved path is concatenated into the
-    # Reject path-traversal segments. The resolved path is concatenated into the
     # project-scoped API URL (f"{base_path}/{path}" in MemoryClient), so a '..'
     # segment would let a single request climb out of the project's route prefix.
     # (Security: path traversal / route escape.)

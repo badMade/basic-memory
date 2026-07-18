@@ -644,6 +644,40 @@ async def test_format_file_shell_positional_placeholder_is_raw(tmp_path: Path, m
     assert captured["args"] == ("sh", "-c", 'cat "$1"', "--", str(test_file))
 
 
+@pytest.mark.asyncio
+async def test_format_file_shell_script_file_arg_is_raw(tmp_path: Path, monkeypatch):
+    """`sh run.sh --stdin-path={file}` runs a script FILE, not `-c` source, so the
+    embedded {file} is a plain argument to the script and must stay RAW — only a
+    placeholder inside the `-c` program string is shell source."""
+    subdir = tmp_path / "a b"
+    subdir.mkdir()
+    test_file = subdir / "f.md"
+    test_file.write_text("# T\n")
+
+    captured: dict[str, Any] = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        return _Proc()
+
+    monkeypatch.setattr("basic_memory.file_utils.asyncio.create_subprocess_exec", fake_exec)
+
+    config = BasicMemoryConfig(
+        format_on_save=True,
+        formatter_command="sh run.sh --stdin-path={file}",
+    )
+    await format_file(test_file, config)
+
+    # No `-c`, so nothing is shell-quoted; the path is one raw argv element.
+    assert captured["args"] == ("sh", "run.sh", f"--stdin-path={test_file}")
+
+
 # =============================================================================
 # format_markdown_builtin tests
 # =============================================================================

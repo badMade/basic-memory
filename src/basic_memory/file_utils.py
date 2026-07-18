@@ -217,10 +217,26 @@ async def format_markdown_builtin(path: Path) -> Optional[str]:
         return None
 
 
-# Formatter executables that re-parse their argument as a shell script (`<shell> -c
-# '... {file}'`). When the configured formatter is one of these, the substituted path
-# must be shell-quoted; for any other (direct-exec) formatter it is passed raw.
+# Shells that re-parse a `-c <program>` argument as source code. Only the program
+# string passed to `-c` is interpreted by the shell; the executable, script files,
+# script arguments, and positionals are all literal argv items.
 _FORMATTER_SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
+
+
+def _shell_c_program_index(tokens: list[str]) -> Optional[int]:
+    """Return the index of a shell's ``-c`` program argument, or None.
+
+    Only that token is re-parsed as shell source, so an embedded ``{file}`` there is
+    the single place that needs shell-quoting. Every other token — including a
+    script-file path (``sh formatter.sh ...``) and any arguments to it — is a literal
+    argv item and must be substituted raw.
+    """
+    if not tokens or Path(tokens[0]).name not in _FORMATTER_SHELLS:
+        return None
+    for i in range(1, len(tokens) - 1):
+        if tokens[i] == "-c":
+            return i + 1
+    return None
 
 
 async def format_file(
@@ -258,28 +274,28 @@ async def format_file(
             logger.debug("No formatter configured for extension", extension=extension)
             return None
 
-    # Use external formatter. create_subprocess_exec never runs a shell, so how {file}
-    # is substituted depends on the placeholder's position and whether the formatter
-    # itself invokes a shell:
-    #   - Standalone token `{file}` → substituted RAW. It is exactly one argv element,
-    #     whether a direct-exec argument (`prettier --write {file}`) or a shell
-    #     positional passed after `--` and referenced as $1 in the script
-    #     (`sh -c 'fmt "$1"' -- {file}`). Quoting it would hand the tool/`$1` literal
-    #     quote characters.
-    #   - Embedded placeholder (part of a larger token, e.g. `--stdin-path={file}` or a
-    #     shell script `sh -c 'echo x > {file}'`) → RAW for a direct-exec formatter, but
-    #     shell-quoted when the formatter is a shell, because that token IS shell source.
-    #     Note titles are only partially sanitized (sanitize_for_filename keeps ';', '$',
-    #     backticks, spaces), so an unquoted embedded path like "x; rm -rf ~" would
-    #     word-split or inject commands into the script; shlex.quote closes that.
-    # (Security: argument injection for direct exec; shell command injection for shells.)
+    # Use external formatter. create_subprocess_exec never runs a shell, so {file} is
+    # substituted RAW almost everywhere — each token is passed literally as one argv
+    # element, so a path with spaces/metacharacters cannot split into extra arguments
+    # or be re-interpreted. The single exception is a placeholder embedded inside the
+    # program string a shell re-parses (the token right after `-c`, e.g.
+    # `sh -c 'echo x > {file}'`): note titles are only partially sanitized
+    # (sanitize_for_filename keeps ';', '$', backticks, spaces), so an unquoted path
+    # like "x; rm -rf ~" would word-split or inject commands into that script, and it is
+    # shell-quoted. Everything else — direct-exec args (`prettier --write {file}`,
+    # `fmt --stdin-path={file}`), shell positionals (`sh -c 'fmt "$1"' -- {file}`), and
+    # args to a shell script file (`sh run.sh --stdin-path={file}`) — stays raw, because
+    # quoting there would hand the tool literal quote characters it cannot resolve.
+    # (Security: argument injection for direct exec; shell command injection in `-c`.)
     try:
         formatter_tokens = shlex.split(formatter)
-        uses_shell = bool(formatter_tokens) and Path(formatter_tokens[0]).name in _FORMATTER_SHELLS
-        embedded_value = shlex.quote(str(path)) if uses_shell else str(path)
+        shell_program_index = _shell_c_program_index(formatter_tokens)
         args = [
-            str(path) if token == "{file}" else token.replace("{file}", embedded_value)
-            for token in formatter_tokens
+            token.replace(
+                "{file}",
+                shlex.quote(str(path)) if index == shell_program_index else str(path),
+            )
+            for index, token in enumerate(formatter_tokens)
         ]
 
         proc = await asyncio.create_subprocess_exec(

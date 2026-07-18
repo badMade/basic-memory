@@ -191,11 +191,21 @@ class FileService:
         Raises:
             FileOperationError: If directory creation fails
         """
-        try:
-            # Convert string to Path if needed
-            path_obj = self.base_path / path if isinstance(path, str) else path
-            full_path = path_obj if path_obj.is_absolute() else self.base_path / path_obj
+        # Convert string to Path if needed
+        path_obj = self.base_path / path if isinstance(path, str) else path
+        full_path = path_obj if path_obj.is_absolute() else self.base_path / path_obj
 
+        # A relative directory (a str, or a relative Path) is always meant to stay
+        # inside the project, so fail closed if it escapes. Without this, an untrusted
+        # importer destination_folder like '../../outside' would mkdir outside the
+        # project root before the eventual note write is rejected. Absolute Paths
+        # intentionally bypass base_path for system-level project/home directory
+        # creation (see get_project_service), so they skip the check.
+        # (Security: path traversal side effect.)
+        if not (isinstance(path, Path) and path.is_absolute()):
+            self.resolve_within_base(full_path)
+
+        try:
             # Use semaphore for concurrency control
             async with self._file_semaphore:
                 # Run blocking mkdir in thread pool

@@ -217,6 +217,12 @@ async def format_markdown_builtin(path: Path) -> Optional[str]:
         return None
 
 
+# Formatter executables that re-parse their argument as a shell script (`<shell> -c
+# '... {file}'`). When the configured formatter is one of these, the substituted path
+# must be shell-quoted; for any other (direct-exec) formatter it is passed raw.
+_FORMATTER_SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
+
+
 async def format_file(
     path: Path,
     config: "BasicMemoryConfig",
@@ -252,22 +258,23 @@ async def format_file(
             logger.debug("No formatter configured for extension", extension=extension)
             return None
 
-    # Use external formatter. Build argv without a shell, keeping the file path safe
-    # in both formatter styles:
-    #   - Standalone placeholder (e.g. `prettier --write {file}`): the token IS the
-    #     path, so substitute it raw — it becomes exactly one argv element and a path
-    #     with spaces/metacharacters cannot split into extra arguments.
-    #   - Embedded placeholder (e.g. a shell script `sh -c 'echo x > {file}'`): the
-    #     surrounding token is interpreted by a shell, so shell-quote the path. Note
-    #     titles are only partially sanitized (sanitize_for_filename keeps ';', '$',
-    #     backticks, spaces), so an unquoted path like "x; rm -rf ~" would word-split
-    #     or inject commands into the script. shlex.quote closes that.
-    # (Security: argument injection + shell command injection via crafted paths.)
+    # Use external formatter. create_subprocess_exec never runs a shell, so the {file}
+    # substitution strategy depends on whether the formatter itself invokes one:
+    #   - Direct exec (e.g. `prettier --write {file}` or `fmt --stdin-path={file}`):
+    #     each token is passed literally as one argv element, so substitute the path
+    #     RAW. Spaces/metacharacters are safe (no word-splitting), and quoting would
+    #     wrongly hand the tool literal quote characters.
+    #   - Shell invocation (e.g. `sh -c 'echo x > {file}'`): the script argument is
+    #     re-parsed by the shell, so shell-quote the path. Note titles are only
+    #     partially sanitized (sanitize_for_filename keeps ';', '$', backticks,
+    #     spaces), so an unquoted path like "x; rm -rf ~" would word-split or inject
+    #     commands into the script; shlex.quote closes that.
+    # (Security: argument injection for direct exec; shell command injection for shells.)
     try:
-        args = [
-            str(path) if token == "{file}" else token.replace("{file}", shlex.quote(str(path)))
-            for token in shlex.split(formatter)
-        ]
+        formatter_tokens = shlex.split(formatter)
+        uses_shell = bool(formatter_tokens) and Path(formatter_tokens[0]).name in _FORMATTER_SHELLS
+        file_value = shlex.quote(str(path)) if uses_shell else str(path)
+        args = [token.replace("{file}", file_value) for token in formatter_tokens]
 
         proc = await asyncio.create_subprocess_exec(
             *args,

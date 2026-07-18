@@ -576,6 +576,40 @@ async def test_format_file_shell_quotes_embedded_placeholder(tmp_path: Path, mon
     assert "; touch pwned" not in captured["args"][2].replace(shlex.quote(str(test_file)), "")
 
 
+@pytest.mark.asyncio
+async def test_format_file_direct_exec_embedded_placeholder_is_raw(tmp_path: Path, monkeypatch):
+    """A {file} embedded in a non-shell argv token (e.g. --stdin-path={file}) must be
+    substituted RAW: create_subprocess_exec passes it literally, so shell-quoting would
+    hand the tool literal quote characters it cannot resolve."""
+    subdir = tmp_path / "a b"
+    subdir.mkdir()
+    test_file = subdir / "f.md"
+    test_file.write_text("# T\n")
+
+    captured: dict[str, Any] = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        return _Proc()
+
+    monkeypatch.setattr("basic_memory.file_utils.asyncio.create_subprocess_exec", fake_exec)
+
+    config = BasicMemoryConfig(
+        format_on_save=True,
+        formatter_command="prettier --stdin-filepath={file}",
+    )
+    await format_file(test_file, config)
+
+    # One argv element, no shell quotes injected around the path.
+    assert captured["args"] == ("prettier", f"--stdin-filepath={test_file}")
+
+
 # =============================================================================
 # format_markdown_builtin tests
 # =============================================================================

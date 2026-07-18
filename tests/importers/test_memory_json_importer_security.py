@@ -90,3 +90,32 @@ async def test_memory_json_import_handles_numeric_id_name(memory_json_importer):
     assert result.success
     assert result.entities == 1
     assert (project / "note" / "123.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_memory_json_import_rejects_traversal_destination_folder(
+    memory_json_importer, tmp_path
+):
+    """A traversing destination_folder must not create directories outside the project.
+
+    write_file already rejects the escaped note path, but ensure_directory previously
+    created the folder outside base_path first; the ensure_directory containment guard
+    closes that side effect.
+    """
+    importer, project = memory_json_importer
+    entities = [
+        {
+            "type": "entity",
+            "entityType": "note",
+            "name": "safe-name",
+            "observations": ["x"],
+        }
+    ]
+
+    # '../outside' escapes the project (base_path = tmp_path/'project') but stays inside
+    # tmp_path, so we can assert it is never created.
+    result = await importer.import_data(entities, destination_folder="../outside")
+
+    # Import fails closed and nothing is created outside the project root.
+    assert result.success is False
+    assert not (tmp_path / "outside").exists()

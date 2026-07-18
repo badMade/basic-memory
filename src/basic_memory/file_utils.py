@@ -258,23 +258,29 @@ async def format_file(
             logger.debug("No formatter configured for extension", extension=extension)
             return None
 
-    # Use external formatter. create_subprocess_exec never runs a shell, so the {file}
-    # substitution strategy depends on whether the formatter itself invokes one:
-    #   - Direct exec (e.g. `prettier --write {file}` or `fmt --stdin-path={file}`):
-    #     each token is passed literally as one argv element, so substitute the path
-    #     RAW. Spaces/metacharacters are safe (no word-splitting), and quoting would
-    #     wrongly hand the tool literal quote characters.
-    #   - Shell invocation (e.g. `sh -c 'echo x > {file}'`): the script argument is
-    #     re-parsed by the shell, so shell-quote the path. Note titles are only
-    #     partially sanitized (sanitize_for_filename keeps ';', '$', backticks,
-    #     spaces), so an unquoted path like "x; rm -rf ~" would word-split or inject
-    #     commands into the script; shlex.quote closes that.
+    # Use external formatter. create_subprocess_exec never runs a shell, so how {file}
+    # is substituted depends on the placeholder's position and whether the formatter
+    # itself invokes a shell:
+    #   - Standalone token `{file}` → substituted RAW. It is exactly one argv element,
+    #     whether a direct-exec argument (`prettier --write {file}`) or a shell
+    #     positional passed after `--` and referenced as $1 in the script
+    #     (`sh -c 'fmt "$1"' -- {file}`). Quoting it would hand the tool/`$1` literal
+    #     quote characters.
+    #   - Embedded placeholder (part of a larger token, e.g. `--stdin-path={file}` or a
+    #     shell script `sh -c 'echo x > {file}'`) → RAW for a direct-exec formatter, but
+    #     shell-quoted when the formatter is a shell, because that token IS shell source.
+    #     Note titles are only partially sanitized (sanitize_for_filename keeps ';', '$',
+    #     backticks, spaces), so an unquoted embedded path like "x; rm -rf ~" would
+    #     word-split or inject commands into the script; shlex.quote closes that.
     # (Security: argument injection for direct exec; shell command injection for shells.)
     try:
         formatter_tokens = shlex.split(formatter)
         uses_shell = bool(formatter_tokens) and Path(formatter_tokens[0]).name in _FORMATTER_SHELLS
-        file_value = shlex.quote(str(path)) if uses_shell else str(path)
-        args = [token.replace("{file}", file_value) for token in formatter_tokens]
+        embedded_value = shlex.quote(str(path)) if uses_shell else str(path)
+        args = [
+            str(path) if token == "{file}" else token.replace("{file}", embedded_value)
+            for token in formatter_tokens
+        ]
 
         proc = await asyncio.create_subprocess_exec(
             *args,

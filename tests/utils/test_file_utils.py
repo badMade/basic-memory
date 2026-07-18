@@ -610,6 +610,40 @@ async def test_format_file_direct_exec_embedded_placeholder_is_raw(tmp_path: Pat
     assert captured["args"] == ("prettier", f"--stdin-filepath={test_file}")
 
 
+@pytest.mark.asyncio
+async def test_format_file_shell_positional_placeholder_is_raw(tmp_path: Path, monkeypatch):
+    """The standard-safe shell form `sh -c 'fmt "$1"' -- {file}` passes {file} as a
+    separate argv item (the shell's $1), not shell source, so it must stay RAW even
+    though the formatter is a shell — quoting it would make $1 include literal quotes."""
+    subdir = tmp_path / "a b"
+    subdir.mkdir()
+    test_file = subdir / "f.md"
+    test_file.write_text("# T\n")
+
+    captured: dict[str, Any] = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        return _Proc()
+
+    monkeypatch.setattr("basic_memory.file_utils.asyncio.create_subprocess_exec", fake_exec)
+
+    config = BasicMemoryConfig(
+        format_on_save=True,
+        formatter_command="sh -c 'cat \"$1\"' -- {file}",
+    )
+    await format_file(test_file, config)
+
+    # The embedded $1 script token is untouched; the standalone {file} positional is raw.
+    assert captured["args"] == ("sh", "-c", 'cat "$1"', "--", str(test_file))
+
+
 # =============================================================================
 # format_markdown_builtin tests
 # =============================================================================

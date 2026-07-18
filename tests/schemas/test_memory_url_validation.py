@@ -102,6 +102,8 @@ class TestValidateMemoryUrlPath:
             "notes/../secret",
             "./hidden",
             "a/./b",
+            "..\\..\\windows",  # Windows-style backslash traversal
+            "notes\\..\\secret",
         ]
 
         for path in invalid_paths:

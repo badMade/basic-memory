@@ -378,8 +378,9 @@ class LocalNoteContentStorage:
 
         # Fail closed before writing: this sink bypasses FileService.write_file, so
         # apply the same containment guard against a traversing entity file_path
-        # reaching disk (defense in depth behind sanitize_for_directory).
-        self.file_service.resolve_within_base(full_path)
+        # reaching disk (defense in depth behind sanitize_for_directory). Use the
+        # returned canonical path so the write acts on exactly what was validated.
+        full_path = self.file_service.resolve_within_base(full_path)
 
         # Accepted-note materialization persists an already-accepted DB snapshot.
         # Writing bytes keeps the materialized file checksum identical to the

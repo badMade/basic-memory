@@ -87,8 +87,12 @@ class MemoryJsonImporter(Importer[EntityImportResult]):
                 # joined file_path onto base_path. clean_filename() strips path
                 # separators and dots, matching the sibling importers.
                 # (Security: path traversal / arbitrary file write.)
-                safe_type = clean_filename(entity_type)
-                safe_name = clean_filename(name)
+                # str() first: the `id` fallback name (and entityType) can be a JSON
+                # number, and clean_filename's regexes require a string. clean_filename
+                # itself never returns empty (it falls back to "untitled"), so no
+                # empty-segment guard is needed here.
+                safe_type = clean_filename(str(entity_type))
+                safe_name = clean_filename(str(name))
 
                 # Build permalink with optional destination folder prefix
                 relative_path = (

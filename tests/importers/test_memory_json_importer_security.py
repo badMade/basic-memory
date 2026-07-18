@@ -70,3 +70,23 @@ async def test_memory_json_import_writes_sanitized_normal_entity(memory_json_imp
     assert result.entities == 1
     # clean_filename replaces hyphens with underscores (matching sibling importers).
     assert (project / "note" / "meeting_notes.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_memory_json_import_handles_numeric_id_name(memory_json_importer):
+    """A numeric `id` fallback name must not crash sanitization (it is str-coerced)."""
+    importer, project = memory_json_importer
+    entities = [
+        {
+            "type": "entity",
+            "entityType": "note",
+            "id": 123,  # numeric id used as the fallback name
+            "observations": ["x"],
+        }
+    ]
+
+    result = await importer.import_data(entities, destination_folder="")
+
+    assert result.success
+    assert result.entities == 1
+    assert (project / "note" / "123.md").exists()

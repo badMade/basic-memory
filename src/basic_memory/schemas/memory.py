@@ -41,8 +41,9 @@ def validate_memory_url_path(path: str) -> bool:
     # Reject path-traversal segments. The resolved path is concatenated into the
     # project-scoped API URL (f"{base_path}/{path}" in MemoryClient), so a '..'
     # segment would let a single request climb out of the project's route prefix.
-    # (Security: path traversal / route escape.)
-    if any(segment in (".", "..") for segment in path.split("/")):
+    # Normalize backslashes first so a Windows-style '..\..' cannot slip past a
+    # forward-slash-only split. (Security: path traversal / route escape.)
+    if any(segment in (".", "..") for segment in path.replace("\\", "/").split("/")):
         return False
 
     # Check for invalid characters (excluding * which is used for pattern matching)

@@ -231,8 +231,10 @@ class FileService:
         full_path = path_obj if path_obj.is_absolute() else self.base_path / path_obj
 
         # Fail closed before creating directories or writing bytes: reject any
-        # path that escapes the project root (path traversal / arbitrary write).
-        self.resolve_within_base(full_path)
+        # path that escapes the project root (path traversal / arbitrary write),
+        # and use the returned canonical path so every subsequent operation acts
+        # on the exact target that was validated.
+        full_path = self.resolve_within_base(full_path)
 
         try:
             with logfire.span(
@@ -456,9 +458,10 @@ class FileService:
 
         # Fail closed on traversal for both endpoints: a '..' source could move a
         # file from outside the project into it, and a '..' destination could move
-        # a note out of the project root. (Security: path traversal.)
-        self.resolve_within_base(src_full)
-        self.resolve_within_base(dst_full)
+        # a note out of the project root. Use the returned canonical paths so the
+        # rename operates on exactly what was validated. (Security: path traversal.)
+        src_full = self.resolve_within_base(src_full)
+        dst_full = self.resolve_within_base(dst_full)
 
         try:
             # Ensure destination directory exists

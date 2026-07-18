@@ -3,6 +3,7 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+from basic_memory.file_utils import sanitize_for_directory
 from basic_memory.markdown.schemas import EntityFrontmatter, EntityMarkdown, Observation, Relation
 from basic_memory.importers.base import Importer
 from basic_memory.importers.utils import clean_filename
@@ -42,6 +43,12 @@ class MemoryJsonImporter(Importer[EntityImportResult]):
             EntityImportResult containing statistics and status of the import.
         """
         try:
+            # Contain the caller-supplied destination folder to the project root before
+            # it is used to create directories or build note paths. sanitize_for_directory
+            # drops any '..' traversal segments, so an untrusted '../../outside' cannot
+            # create directories outside the project. (Security: path traversal.)
+            destination_folder = sanitize_for_directory(destination_folder)
+
             # First pass - collect all relations by source entity
             entity_relations: Dict[str, List[Relation]] = {}
             entities: Dict[str, Dict[str, Any]] = {}

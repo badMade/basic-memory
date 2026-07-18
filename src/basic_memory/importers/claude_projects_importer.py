@@ -3,6 +3,7 @@
 import logging
 from typing import Any, Dict, Optional
 
+from basic_memory.file_utils import sanitize_for_directory
 from basic_memory.markdown.schemas import EntityFrontmatter, EntityMarkdown
 from basic_memory.importers.base import Importer
 from basic_memory.schemas.importer import ProjectImportResult
@@ -41,6 +42,8 @@ class ClaudeProjectsImporter(Importer[ProjectImportResult]):
             ProjectImportResult containing statistics and status of the import.
         """
         try:
+            # Contain an untrusted destination folder to the project root (drop '..').
+            destination_folder = sanitize_for_directory(destination_folder)
             # Ensure the base folder exists
             if destination_folder:
                 await self.ensure_folder_exists(destination_folder)

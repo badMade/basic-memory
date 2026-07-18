@@ -384,3 +384,31 @@ def test_resolve_within_base_returns_resolved_path(tmp_path: Path):
     service = FileService(tmp_path)
     resolved = service.resolve_within_base(tmp_path / "notes" / "ok.md")
     assert resolved == (tmp_path / "notes" / "ok.md").resolve()
+
+
+@pytest.mark.asyncio
+async def test_ensure_directory_rejects_relative_traversal(tmp_path: Path):
+    """A relative directory that escapes the project root fails closed (e.g. an
+    untrusted importer destination_folder of '../outside')."""
+    project = tmp_path / "project"
+    project.mkdir()
+    service = FileService(project)
+
+    with pytest.raises(FileOperationError, match="escapes the project boundary"):
+        await service.ensure_directory("../outside")
+
+    assert not (tmp_path / "outside").exists()
+
+
+@pytest.mark.asyncio
+async def test_ensure_directory_allows_absolute_path_outside_base(tmp_path: Path):
+    """Absolute Paths intentionally bypass the containment check so system-level
+    project/home directory creation still works (see get_project_service)."""
+    project = tmp_path / "project"
+    project.mkdir()
+    service = FileService(project)
+    target = tmp_path / "sibling"  # absolute Path outside base_path
+
+    await service.ensure_directory(target)
+
+    assert target.exists()

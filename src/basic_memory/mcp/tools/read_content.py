@@ -286,13 +286,16 @@ async def read_content(
 
         # Handle text or json
         if content_type.startswith("text/") or content_type == "application/json":
-            # Security (DoS): bound the raw text pulled into the MCP response. The
-            # binary branch already enforces this cap, but the text branch did not,
-            # so a very large text/json resource could exhaust memory. Fall back to
+            # Security (DoS): bound the size of the text/json payload returned in the
+            # MCP response, matching the cap the binary branch already enforces (the
+            # text branch previously returned unbounded text). Note this bounds what
+            # we return, not peak memory: call_get() is non-streaming, so httpx has
+            # already buffered the full body by here — a true memory bound would need
+            # a streaming GET with early abort (tracked as a follow-up). Fall back to
             # the actual buffered body length when Content-Length is missing or 0
-            # (e.g. chunked encoding) so the guard cannot be bypassed. Images are
-            # handled separately (downscaled by optimize_image), so this cap does
-            # not apply to them.
+            # (e.g. chunked encoding) so the check cannot be skipped. Images are
+            # handled separately (downscaled by optimize_image), so this cap does not
+            # apply to them.
             actual_length = content_length or len(response.content)
             if actual_length > 350000:
                 logger.warning("Text resource too large for response", size=actual_length)

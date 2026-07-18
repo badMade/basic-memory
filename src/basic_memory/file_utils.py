@@ -252,14 +252,22 @@ async def format_file(
             logger.debug("No formatter configured for extension", extension=extension)
             return None
 
-    # Use external formatter.
-    # Security: tokenize the formatter template BEFORE substituting the path so the
-    # path is always a single argv element. Substituting into the command string
-    # first and splitting afterwards would let a path containing spaces or shell
-    # metacharacters expand into extra argv tokens (argument injection).
-    # create_subprocess_exec already avoids a shell, but token boundaries matter.
+    # Use external formatter. Build argv without a shell, keeping the file path safe
+    # in both formatter styles:
+    #   - Standalone placeholder (e.g. `prettier --write {file}`): the token IS the
+    #     path, so substitute it raw — it becomes exactly one argv element and a path
+    #     with spaces/metacharacters cannot split into extra arguments.
+    #   - Embedded placeholder (e.g. a shell script `sh -c 'echo x > {file}'`): the
+    #     surrounding token is interpreted by a shell, so shell-quote the path. Note
+    #     titles are only partially sanitized (sanitize_for_filename keeps ';', '$',
+    #     backticks, spaces), so an unquoted path like "x; rm -rf ~" would word-split
+    #     or inject commands into the script. shlex.quote closes that.
+    # (Security: argument injection + shell command injection via crafted paths.)
     try:
-        args = [token.replace("{file}", str(path)) for token in shlex.split(formatter)]
+        args = [
+            str(path) if token == "{file}" else token.replace("{file}", shlex.quote(str(path)))
+            for token in shlex.split(formatter)
+        ]
 
         proc = await asyncio.create_subprocess_exec(
             *args,

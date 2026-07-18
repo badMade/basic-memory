@@ -1,6 +1,7 @@
 """Tests for file utilities."""
 
 import random
+import shlex
 import string
 import sys
 from pathlib import Path
@@ -524,9 +525,7 @@ async def test_format_file_passes_path_as_single_argv_element(tmp_path: Path, mo
         captured["args"] = args
         return _Proc()
 
-    monkeypatch.setattr(
-        "basic_memory.file_utils.asyncio.create_subprocess_exec", fake_exec
-    )
+    monkeypatch.setattr("basic_memory.file_utils.asyncio.create_subprocess_exec", fake_exec)
 
     config = BasicMemoryConfig(
         format_on_save=True,
@@ -535,6 +534,46 @@ async def test_format_file_passes_path_as_single_argv_element(tmp_path: Path, mo
     await format_file(test_file, config)
 
     assert captured["args"] == ("prettier", "--write", str(test_file))
+
+
+@pytest.mark.asyncio
+async def test_format_file_shell_quotes_embedded_placeholder(tmp_path: Path, monkeypatch):
+    """Security: a {file} embedded in a shell-script token (sh -c '... {file}') is
+    shell-quoted, so a path with spaces or shell metacharacters (e.g. a note titled
+    'x; rm -rf ~') cannot word-split or inject commands into the script."""
+    # A directory name with a space and a shell metacharacter exercises quoting.
+    subdir = tmp_path / "a b; touch pwned"
+    subdir.mkdir()
+    test_file = subdir / "f.md"
+    test_file.write_text("# T\n")
+
+    captured: dict[str, Any] = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        return _Proc()
+
+    monkeypatch.setattr("basic_memory.file_utils.asyncio.create_subprocess_exec", fake_exec)
+
+    config = BasicMemoryConfig(
+        format_on_save=True,
+        formatter_command="sh -c 'cat {file}'",
+    )
+    await format_file(test_file, config)
+
+    # 'sh' and '-c' are unchanged; the script token has the path shell-quoted so the
+    # shell treats it as a single, inert argument.
+    assert captured["args"][0] == "sh"
+    assert captured["args"][1] == "-c"
+    assert captured["args"][2] == f"cat {shlex.quote(str(test_file))}"
+    # The metacharacters survive only inside the quoted string (no bare '; touch').
+    assert "; touch pwned" not in captured["args"][2].replace(shlex.quote(str(test_file)), "")
 
 
 # =============================================================================

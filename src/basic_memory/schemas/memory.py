@@ -38,6 +38,15 @@ def validate_memory_url_path(path: str) -> bool:
     if "//" in path:
         return False
 
+    # Reject path-traversal segments. The resolved path is concatenated into the
+    # project-scoped API URL (f"{base_path}/{path}" in MemoryClient), so a '..'
+    # segment would let a single request climb out of the project's route prefix.
+    # (Security: path traversal / route escape.)
+    # Normalize backslashes to forward slashes to prevent Windows-style traversal bypasses.
+    normalized_path = path.replace("\\", "/")
+    if any(segment in (".", "..") for segment in normalized_path.split("/")):
+        return False
+
     # Check for invalid characters (excluding * which is used for pattern matching)
     invalid_chars = {"<", ">", '"', "|", "?"}
     if any(char in path for char in invalid_chars):

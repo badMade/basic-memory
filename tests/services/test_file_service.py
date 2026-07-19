@@ -318,3 +318,97 @@ def test_paths_share_storage_target_missing_path(tmp_path: Path):
     (tmp_path / "present.md").write_text("x")
 
     assert service.paths_share_storage_target("present.md", "absent.md") is False
+
+
+# =============================================================================
+# Path-traversal containment (security)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_write_file_rejects_path_traversal(tmp_path: Path):
+    """A relative path with '..' segments must not escape the project root."""
+    project = tmp_path / "project"
+    project.mkdir()
+    service = FileService(project)
+    outside = tmp_path / "evil.md"
+
+    with pytest.raises(FileOperationError, match="escapes the project boundary"):
+        await service.write_file("../evil.md", "pwned")
+
+    # Fail closed: nothing was written outside the project root.
+    assert not outside.exists()
+
+
+@pytest.mark.asyncio
+async def test_write_file_rejects_absolute_path_outside_base(tmp_path: Path):
+    """An absolute path outside base_path must be rejected."""
+    project = tmp_path / "project"
+    project.mkdir()
+    service = FileService(project)
+    outside = tmp_path / "abs-evil.md"
+
+    with pytest.raises(FileOperationError, match="escapes the project boundary"):
+        await service.write_file(outside, "pwned")
+
+    assert not outside.exists()
+
+
+@pytest.mark.asyncio
+async def test_write_file_allows_normal_nested_path(tmp_path: Path):
+    """Legitimate nested writes inside the project still succeed."""
+    service = FileService(tmp_path)
+    checksum = await service.write_file("notes/sub/ok.md", "# ok\n")
+    assert checksum
+    assert (tmp_path / "notes" / "sub" / "ok.md").read_text() == "# ok\n"
+
+
+@pytest.mark.asyncio
+async def test_move_file_rejects_traversal_destination(tmp_path: Path):
+    """A move destination with '..' segments must not escape the project root."""
+    project = tmp_path / "project"
+    project.mkdir()
+    service = FileService(project)
+    (project / "note.md").write_text("x")
+    outside = tmp_path / "escaped.md"
+
+    with pytest.raises(FileOperationError, match="escapes the project boundary"):
+        await service.move_file("note.md", "../escaped.md")
+
+    assert not outside.exists()
+    assert (project / "note.md").exists()
+
+
+def test_resolve_within_base_returns_resolved_path(tmp_path: Path):
+    """resolve_within_base returns the canonical path for an in-bounds target."""
+    service = FileService(tmp_path)
+    resolved = service.resolve_within_base(tmp_path / "notes" / "ok.md")
+    assert resolved == (tmp_path / "notes" / "ok.md").resolve()
+
+
+@pytest.mark.asyncio
+async def test_ensure_directory_rejects_relative_traversal(tmp_path: Path):
+    """A relative directory that escapes the project root fails closed (e.g. an
+    untrusted importer destination_folder of '../outside')."""
+    project = tmp_path / "project"
+    project.mkdir()
+    service = FileService(project)
+
+    with pytest.raises(FileOperationError, match="escapes the project boundary"):
+        await service.ensure_directory("../outside")
+
+    assert not (tmp_path / "outside").exists()
+
+
+@pytest.mark.asyncio
+async def test_ensure_directory_allows_absolute_path_outside_base(tmp_path: Path):
+    """Absolute Paths intentionally bypass the containment check so system-level
+    project/home directory creation still works (see get_project_service)."""
+    project = tmp_path / "project"
+    project.mkdir()
+    service = FileService(project)
+    target = tmp_path / "sibling"  # absolute Path outside base_path
+
+    await service.ensure_directory(target)
+
+    assert target.exists()

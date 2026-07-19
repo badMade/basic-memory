@@ -143,6 +143,18 @@
           }
         }
 
+        // Security: note titles/permalinks/paths are attacker-influenceable content
+        // (a malicious note can set them). They are interpolated into an innerHTML
+        // string in renderTable, so escape HTML metacharacters to prevent stored XSS.
+        function escapeHtml(value) {
+          return String(value == null ? "" : value)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#39;");
+        }
+
         function extractStructured(toolOutput) {
           if (!toolOutput) return null;
           const structured =
@@ -193,10 +205,10 @@
               return `
                 <tr>
                   <td>
-                    <div class=\"title\">${result.title || "Untitled"}</div>
-                    <div class=\"path\">${result.permalink || result.file_path || ""}</div>
+                    <div class=\"title\">${escapeHtml(result.title || "Untitled")}</div>
+                    <div class=\"path\">${escapeHtml(result.permalink || result.file_path || "")}</div>
                   </td>
-                  <td>${result.type || ""}</td>
+                  <td>${escapeHtml(result.type || "")}</td>
                   <td>${Number(result.score || 0).toFixed(2)}</td>
                 </tr>
               `;

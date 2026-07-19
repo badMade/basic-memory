@@ -28,6 +28,10 @@ def get_rclone_config_path() -> Path:
     """Get the path to rclone configuration file."""
     config_dir = Path.home() / ".config" / "rclone"
     config_dir.mkdir(parents=True, exist_ok=True)
+    # rclone.conf holds S3 secret_access_key credentials; keep the directory
+    # owner-only on POSIX so the secrets are not group/world-readable.
+    if os.name != "nt":
+        config_dir.chmod(0o700)
     return config_dir / "rclone.conf"
 
 
@@ -58,8 +62,20 @@ def save_rclone_config(config: configparser.ConfigParser) -> None:
     """Save rclone configuration to file."""
     config_path = get_rclone_config_path()
 
-    with open(config_path, "w") as f:
-        config.write(f)
+    # The file contains plaintext S3 secret_access_key credentials. On POSIX,
+    # create/open it with 0o600 directly (and fchmod to tighten a pre-existing,
+    # looser-permissioned file) BEFORE writing the secret, so there is never a
+    # window where the credentials are group/world-readable. O_TRUNC only clears
+    # any prior content, which is not secret to a reader that already had it.
+    # (Security: secret exposure — avoids the write-then-chmod race.)
+    if os.name != "nt":
+        fd = os.open(config_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
+            os.fchmod(f.fileno(), 0o600)
+            config.write(f)
+    else:
+        with open(config_path, "w") as f:
+            config.write(f)
 
     console.print(f"[dim]Updated rclone config: {config_path}[/dim]")
 

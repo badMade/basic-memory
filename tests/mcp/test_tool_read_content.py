@@ -162,6 +162,24 @@ async def test_read_content_allows_safe_path_integration(client, test_project):
 
 
 @pytest.mark.asyncio
+async def test_read_content_rejects_oversized_text(client, test_project):
+    """Security (DoS): a very large text resource is rejected by size instead of
+    being pulled fully into memory / the MCP response. The binary branch already
+    enforced this cap; the text branch previously did not."""
+    big_content = "x" * 400_000
+    await write_note(
+        project=test_project.name,
+        title="Huge",
+        directory="notes",
+        content=big_content,
+    )
+
+    result = await read_content(project=test_project.name, path="notes/huge")
+    assert result["type"] == "error"
+    assert "exceeds maximum allowed size" in result["error"]
+
+
+@pytest.mark.asyncio
 async def test_read_content_workspace_memory_url_routes_with_local_config(
     monkeypatch,
     config_manager,

@@ -197,6 +197,21 @@ def test_configure_rclone_remote_writes_config_and_backs_up_existing(config_home
     assert backups, "expected a backup of rclone.conf to be created"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file mode not applicable on Windows")
+def test_configure_rclone_remote_restricts_secret_permissions(config_home):
+    """Security: rclone.conf holds plaintext S3 secret_access_key, so it (and its
+    directory) must be owner-only (0o600 / 0o700), not group/world-readable."""
+    remote = configure_rclone_remote(access_key="ak", secret_key="sk")
+    assert remote == "basic-memory-cloud"
+
+    cfg_path = get_rclone_config_path()
+    file_mode = cfg_path.stat().st_mode & 0o777
+    dir_mode = cfg_path.parent.stat().st_mode & 0o777
+
+    assert file_mode == 0o600, f"rclone.conf must be 0o600, got {oct(file_mode)}"
+    assert dir_mode == 0o700, f"rclone config dir must be 0o700, got {oct(dir_mode)}"
+
+
 def test_remote_name_for_workspace():
     # Default workspace keeps the legacy remote name (back-compat)
     assert remote_name_for_workspace("personal", is_default=True) == "basic-memory-cloud"

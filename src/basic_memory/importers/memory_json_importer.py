@@ -3,8 +3,10 @@
 import logging
 from typing import Any, Dict, List, Optional
 
+from basic_memory.file_utils import sanitize_for_directory
 from basic_memory.markdown.schemas import EntityFrontmatter, EntityMarkdown, Observation, Relation
 from basic_memory.importers.base import Importer
+from basic_memory.importers.utils import clean_filename
 from basic_memory.schemas.importer import EntityImportResult
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,12 @@ class MemoryJsonImporter(Importer[EntityImportResult]):
             EntityImportResult containing statistics and status of the import.
         """
         try:
+            # Contain the caller-supplied destination folder to the project root before
+            # it is used to create directories or build note paths. sanitize_for_directory
+            # drops any '..' traversal segments, so an untrusted '../../outside' cannot
+            # create directories outside the project. (Security: path traversal.)
+            destination_folder = sanitize_for_directory(destination_folder)
+
             # First pass - collect all relations by source entity
             entity_relations: Dict[str, List[Relation]] = {}
             entities: Dict[str, Dict[str, Any]] = {}
@@ -79,17 +87,31 @@ class MemoryJsonImporter(Importer[EntityImportResult]):
                 # Get entity type with fallback
                 entity_type = entity_data.get("entityType") or entity_data.get("type") or "entity"
 
+                # Sanitize the untrusted `name` and `entity_type` from the imported
+                # memory.json before they become filesystem path segments. Unlike the
+                # ChatGPT/Claude importers, this path was built raw, so a name like
+                # "../../../etc/foo" traversed out of the project root when write_entity
+                # joined file_path onto base_path. clean_filename() strips path
+                # separators and dots, matching the sibling importers.
+                # (Security: path traversal / arbitrary file write.)
+                # str() first: the `id` fallback name (and entityType) can be a JSON
+                # number, and clean_filename's regexes require a string. clean_filename
+                # itself never returns empty (it falls back to "untitled"), so no
+                # empty-segment guard is needed here.
+                safe_type = clean_filename(str(entity_type))
+                safe_name = clean_filename(str(name))
+
                 # Build permalink with optional destination folder prefix
                 relative_path = (
-                    f"{destination_folder}/{entity_type}/{name}"
+                    f"{destination_folder}/{safe_type}/{safe_name}"
                     if destination_folder
-                    else f"{entity_type}/{name}"
+                    else f"{safe_type}/{safe_name}"
                 )
                 permalink, file_path = self.build_import_paths(relative_path)
 
                 # Ensure entity type directory exists using FileService with relative path
                 entity_type_dir = (
-                    f"{destination_folder}/{entity_type}" if destination_folder else entity_type
+                    f"{destination_folder}/{safe_type}" if destination_folder else safe_type
                 )
                 await self.file_service.ensure_directory(entity_type_dir)
 

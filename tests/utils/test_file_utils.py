@@ -1,6 +1,7 @@
 """Tests for file utilities."""
 
 import random
+import shlex
 import string
 import sys
 from pathlib import Path
@@ -276,6 +277,15 @@ def test_sanitize_for_filename_strips_trailing_periods():
         ("my\\directory\\sub", "my/directory/sub"),  # Windows-style separators normalized
         ("my/directory<>:|?*sub", "my/directorysub"),  # All invalid chars removed
         ("////my////directory////", "my/directory"),  # Excessive leading/trailing/multiple slashes
+        # Security: path-traversal segments ('.' and '..') must be dropped so a
+        # hostile Entity.directory cannot escape base_path when file_path is joined.
+        ("..", ""),  # Bare parent-dir segment dropped
+        (".", ""),  # Bare current-dir segment dropped
+        ("../secret", "secret"),  # Leading traversal dropped
+        ("../../etc/passwd", "etc/passwd"),  # Multiple leading traversals dropped
+        ("notes/../../../etc", "notes/etc"),  # Interior traversals dropped
+        ("a/./b/../c", "a/b/c"),  # Dot and dot-dot segments dropped
+        ("..\\..\\windows", "windows"),  # Windows-style traversal dropped
     ],
 )
 def test_sanitize_for_directory_edge_cases(input_directory, expected):
@@ -488,6 +498,184 @@ async def test_format_file_with_spaces_in_path(tmp_path: Path):
 
     result = await format_file(test_file, config)
     assert result == original_content
+
+
+@pytest.mark.asyncio
+async def test_format_file_passes_path_as_single_argv_element(tmp_path: Path, monkeypatch):
+    """Security: the file path must reach the formatter as ONE argv element even
+    when it contains spaces, so a crafted path cannot inject extra arguments.
+
+    The formatter template is tokenized before the path is substituted, so
+    ``prettier --write {file}`` always yields exactly three argv elements.
+    """
+    subdir = tmp_path / "path with spaces"
+    subdir.mkdir()
+    test_file = subdir / "my file.md"
+    test_file.write_text("# Test\n")
+
+    captured: dict[str, Any] = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        return _Proc()
+
+    monkeypatch.setattr("basic_memory.file_utils.asyncio.create_subprocess_exec", fake_exec)
+
+    config = BasicMemoryConfig(
+        format_on_save=True,
+        formatter_command="prettier --write {file}",
+    )
+    await format_file(test_file, config)
+
+    assert captured["args"] == ("prettier", "--write", str(test_file))
+
+
+@pytest.mark.asyncio
+async def test_format_file_shell_quotes_embedded_placeholder(tmp_path: Path, monkeypatch):
+    """Security: a {file} embedded in a shell-script token (sh -c '... {file}') is
+    shell-quoted, so a path with spaces or shell metacharacters (e.g. a note titled
+    'x; rm -rf ~') cannot word-split or inject commands into the script."""
+    # A directory name with a space and a shell metacharacter exercises quoting.
+    subdir = tmp_path / "a b; touch pwned"
+    subdir.mkdir()
+    test_file = subdir / "f.md"
+    test_file.write_text("# T\n")
+
+    captured: dict[str, Any] = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        return _Proc()
+
+    monkeypatch.setattr("basic_memory.file_utils.asyncio.create_subprocess_exec", fake_exec)
+
+    config = BasicMemoryConfig(
+        format_on_save=True,
+        formatter_command="sh -c 'cat {file}'",
+    )
+    await format_file(test_file, config)
+
+    # 'sh' and '-c' are unchanged; the script token has the path shell-quoted so the
+    # shell treats it as a single, inert argument.
+    assert captured["args"][0] == "sh"
+    assert captured["args"][1] == "-c"
+    assert captured["args"][2] == f"cat {shlex.quote(str(test_file))}"
+    # The metacharacters survive only inside the quoted string (no bare '; touch').
+    assert "; touch pwned" not in captured["args"][2].replace(shlex.quote(str(test_file)), "")
+
+
+@pytest.mark.asyncio
+async def test_format_file_direct_exec_embedded_placeholder_is_raw(tmp_path: Path, monkeypatch):
+    """A {file} embedded in a non-shell argv token (e.g. --stdin-path={file}) must be
+    substituted RAW: create_subprocess_exec passes it literally, so shell-quoting would
+    hand the tool literal quote characters it cannot resolve."""
+    subdir = tmp_path / "a b"
+    subdir.mkdir()
+    test_file = subdir / "f.md"
+    test_file.write_text("# T\n")
+
+    captured: dict[str, Any] = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        return _Proc()
+
+    monkeypatch.setattr("basic_memory.file_utils.asyncio.create_subprocess_exec", fake_exec)
+
+    config = BasicMemoryConfig(
+        format_on_save=True,
+        formatter_command="prettier --stdin-filepath={file}",
+    )
+    await format_file(test_file, config)
+
+    # One argv element, no shell quotes injected around the path.
+    assert captured["args"] == ("prettier", f"--stdin-filepath={test_file}")
+
+
+@pytest.mark.asyncio
+async def test_format_file_shell_positional_placeholder_is_raw(tmp_path: Path, monkeypatch):
+    """The standard-safe shell form `sh -c 'fmt "$1"' -- {file}` passes {file} as a
+    separate argv item (the shell's $1), not shell source, so it must stay RAW even
+    though the formatter is a shell — quoting it would make $1 include literal quotes."""
+    subdir = tmp_path / "a b"
+    subdir.mkdir()
+    test_file = subdir / "f.md"
+    test_file.write_text("# T\n")
+
+    captured: dict[str, Any] = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        return _Proc()
+
+    monkeypatch.setattr("basic_memory.file_utils.asyncio.create_subprocess_exec", fake_exec)
+
+    config = BasicMemoryConfig(
+        format_on_save=True,
+        formatter_command="sh -c 'cat \"$1\"' -- {file}",
+    )
+    await format_file(test_file, config)
+
+    # The embedded $1 script token is untouched; the standalone {file} positional is raw.
+    assert captured["args"] == ("sh", "-c", 'cat "$1"', "--", str(test_file))
+
+
+@pytest.mark.asyncio
+async def test_format_file_shell_script_file_arg_is_raw(tmp_path: Path, monkeypatch):
+    """`sh run.sh --stdin-path={file}` runs a script FILE, not `-c` source, so the
+    embedded {file} is a plain argument to the script and must stay RAW — only a
+    placeholder inside the `-c` program string is shell source."""
+    subdir = tmp_path / "a b"
+    subdir.mkdir()
+    test_file = subdir / "f.md"
+    test_file.write_text("# T\n")
+
+    captured: dict[str, Any] = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        captured["args"] = args
+        return _Proc()
+
+    monkeypatch.setattr("basic_memory.file_utils.asyncio.create_subprocess_exec", fake_exec)
+
+    config = BasicMemoryConfig(
+        format_on_save=True,
+        formatter_command="sh run.sh --stdin-path={file}",
+    )
+    await format_file(test_file, config)
+
+    # No `-c`, so nothing is shell-quoted; the path is one raw argv element.
+    assert captured["args"] == ("sh", "run.sh", f"--stdin-path={test_file}")
 
 
 # =============================================================================

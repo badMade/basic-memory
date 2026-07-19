@@ -217,6 +217,28 @@ async def format_markdown_builtin(path: Path) -> Optional[str]:
         return None
 
 
+# Shells that re-parse a `-c <program>` argument as source code. Only the program
+# string passed to `-c` is interpreted by the shell; the executable, script files,
+# script arguments, and positionals are all literal argv items.
+_FORMATTER_SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh"})
+
+
+def _shell_c_program_index(tokens: list[str]) -> Optional[int]:
+    """Return the index of a shell's ``-c`` program argument, or None.
+
+    Only that token is re-parsed as shell source, so an embedded ``{file}`` there is
+    the single place that needs shell-quoting. Every other token — including a
+    script-file path (``sh formatter.sh ...``) and any arguments to it — is a literal
+    argv item and must be substituted raw.
+    """
+    if not tokens or Path(tokens[0]).name not in _FORMATTER_SHELLS:
+        return None
+    for i in range(1, len(tokens) - 1):
+        if tokens[i] == "-c":
+            return i + 1
+    return None
+
+
 async def format_file(
     path: Path,
     config: "BasicMemoryConfig",
@@ -252,13 +274,29 @@ async def format_file(
             logger.debug("No formatter configured for extension", extension=extension)
             return None
 
-    # Use external formatter
-    # Replace {file} placeholder with the actual path
-    cmd = formatter.replace("{file}", str(path))
-
+    # Use external formatter. create_subprocess_exec never runs a shell, so {file} is
+    # substituted RAW almost everywhere — each token is passed literally as one argv
+    # element, so a path with spaces/metacharacters cannot split into extra arguments
+    # or be re-interpreted. The single exception is a placeholder embedded inside the
+    # program string a shell re-parses (the token right after `-c`, e.g.
+    # `sh -c 'echo x > {file}'`): note titles are only partially sanitized
+    # (sanitize_for_filename keeps ';', '$', backticks, spaces), so an unquoted path
+    # like "x; rm -rf ~" would word-split or inject commands into that script, and it is
+    # shell-quoted. Everything else — direct-exec args (`prettier --write {file}`,
+    # `fmt --stdin-path={file}`), shell positionals (`sh -c 'fmt "$1"' -- {file}`), and
+    # args to a shell script file (`sh run.sh --stdin-path={file}`) — stays raw, because
+    # quoting there would hand the tool literal quote characters it cannot resolve.
+    # (Security: argument injection for direct exec; shell command injection in `-c`.)
     try:
-        # Parse command into args list for safer execution (no shell=True)
-        args = shlex.split(cmd)
+        formatter_tokens = shlex.split(formatter)
+        shell_program_index = _shell_c_program_index(formatter_tokens)
+        args = [
+            token.replace(
+                "{file}",
+                shlex.quote(str(path)) if index == shell_program_index else str(path),
+            )
+            for index, token in enumerate(formatter_tokens)
+        ]
 
         proc = await asyncio.create_subprocess_exec(
             *args,
@@ -306,7 +344,7 @@ async def format_file(
         # Formatter executable not found
         logger.warning(
             "Formatter executable not found",
-            command=cmd.split()[0] if cmd else "",
+            command=args[0] if args else formatter,
             path=str(path),
         )
         return None
@@ -552,6 +590,16 @@ def sanitize_for_directory(directory: str) -> str:
 
     # compress multiple, repeated instances of path separators
     sanitized = re.sub(r"[\\/]+", "/", sanitized)
+
+    # Drop path-traversal segments ('.' and '..'). This function is the single
+    # sanitization choke point for the Entity.directory field, which feeds the
+    # computed Entity.file_path used by every note create/update path (MCP tools,
+    # the v2 HTTP API, and importers). Filtering characters is not enough: '..'
+    # is made of allowed characters, so without this a hostile directory value
+    # like '../../etc' survives and escapes base_path when file_path is later
+    # joined onto it. (Security: path traversal / arbitrary file write.)
+    segments = [seg for seg in sanitized.split("/") if seg not in ("", ".", "..")]
+    sanitized = "/".join(segments)
 
     # trim any leading/trailing path separators
     sanitized = sanitized.strip("\\/")

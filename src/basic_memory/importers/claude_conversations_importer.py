@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from basic_memory.file_utils import sanitize_for_directory
 from basic_memory.markdown.schemas import EntityFrontmatter, EntityMarkdown
 from basic_memory.importers.base import Importer
 from basic_memory.schemas.importer import ChatImportResult
@@ -42,6 +43,8 @@ class ClaudeConversationsImporter(Importer[ChatImportResult]):
             ChatImportResult containing statistics and status of the import.
         """
         try:
+            # Contain an untrusted destination folder to the project root (drop '..').
+            destination_folder = sanitize_for_directory(destination_folder)
             # Ensure the destination folder exists
             await self.ensure_folder_exists(destination_folder)
 
